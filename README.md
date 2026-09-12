@@ -1,6 +1,6 @@
 # PoteNad
 
-PoteNad is a small, native macOS plain-text editor inspired by classic Windows 10 Notepad. It focuses on creating and editing text files without Markdown, rich text, AI features, accounts, or plugins. PoteNad requires macOS 13 or newer and has no third-party application dependencies.
+PoteNad is a small, native macOS plain-text editor inspired by classic Windows 10 Notepad. It focuses on creating and editing text files without Markdown, rich text, accounts, plugins, or built-in online services. PoteNad requires macOS 13 or newer and has no third-party application dependencies.
 
 ## Install
 
@@ -14,12 +14,12 @@ brew install --cask potenad
 ## Features
 
 - Familiar document actions including New, Open, Save, Save As, Revert, Duplicate, Rename, Move, Page Setup, and Print.
-- Undo and redo, standard clipboard actions, find and replace, Go to Line, Select Lines, and F5 Time/Date.
+- Undo and redo, standard clipboard actions, text transformations, find and replace, Go to Line, Select Lines, and F5 Time/Date.
 - `.LOG` timestamps when a file whose first line begins with `.LOG` is opened.
 - Character wrapping, writing direction, font selection, zoom from 10–500%, and an optional status bar with line, column, encoding, and line-ending information.
 - UTF-8, UTF-8 with BOM, UTF-16 LE/BE, Windows-1252, and Mac OS Roman text.
 - Detection and preservation of LF, CRLF, and CR line endings, with encoding and line-ending choices in Save As.
-- Native macOS menus, windows, settings, find bar, spelling, substitutions, speech, Services, autosave, recovery, and document versions.
+- Native macOS menus, windows, settings, system/light/dark appearances, find bar, spelling, substitutions, speech, Services, autosave, recovery, document versions, and optional Apple Writing Tools that are off by default.
 - Configurable page setup, printing, headers, and footers.
 
 PoteNad uses standard AppKit controls so it feels at home on macOS while keeping the editor simple and distraction-free.

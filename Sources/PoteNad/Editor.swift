@@ -4,22 +4,6 @@ import TextCore
 final class PlainTextView: NSTextView {
   weak var editor: Editor?
 
-  override func performKeyEquivalent(with event: NSEvent) -> Bool {
-    let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-    guard modifiers.contains(.command), !modifiers.contains(.option), !modifiers.contains(.control),
-      let editor
-    else {
-      return super.performKeyEquivalent(with: event)
-    }
-    switch event.charactersIgnoringModifiers {
-    case "=", "+": editor.zoomIn(nil)
-    case "-": editor.zoomOut(nil)
-    case "0": editor.zoomReset(nil)
-    default: return super.performKeyEquivalent(with: event)
-    }
-    return true
-  }
-
   override func magnify(with event: NSEvent) {
     guard let editor else {
       super.magnify(with: event)
@@ -120,7 +104,7 @@ final class Editor: NSWindowController, NSTextViewDelegate, @preconcurrency NSTe
     textView.isAutomaticLinkDetectionEnabled = false
     textView.isAutomaticDataDetectionEnabled = false
     textView.isAutomaticTextCompletionEnabled = false
-    if #available(macOS 15.0, *) { textView.writingToolsBehavior = .none }
+    updateWritingToolsBehavior()
     textView.textContainerInset = NSSize(width: 6, height: 6)
     textView.font = baseFont
     textView.isVerticallyResizable = true
@@ -368,7 +352,19 @@ final class Editor: NSWindowController, NSTextViewDelegate, @preconcurrency NSTe
     setStatusVisible(UserDefaults.standard.bool(forKey: PreferenceKey.status))
     textView.isContinuousSpellCheckingEnabled = UserDefaults.standard.bool(
       forKey: PreferenceKey.checkSpelling)
+    updateWritingToolsBehavior()
     applyWrap()
+  }
+
+  private func updateWritingToolsBehavior() {
+    if #available(macOS 15.0, *) {
+      textView.allowedWritingToolsResultOptions = .plainText
+    }
+    if #available(macOS 15.2, *) {
+      textView.writingToolsBehavior = AppPreferences.writingToolsEnabled ? .default : .none
+    } else if #available(macOS 15.0, *) {
+      textView.writingToolsBehavior = .none
+    }
   }
 
   func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {

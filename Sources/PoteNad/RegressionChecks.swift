@@ -29,6 +29,15 @@ import TextCore
     editor.window!.contentView!.layoutSubtreeIfNeeded()
     precondition(document.windowControllers.count == 1, "Document must own its editor window")
     precondition(view.usesFindBar, "Editor must use AppKit's native find bar")
+    if #available(macOS 15.2, *) {
+      let expectedWritingTools: NSWritingToolsBehavior =
+        AppPreferences.writingToolsEnabled ? .default : .none
+      precondition(view.writingToolsBehavior == expectedWritingTools)
+      precondition(view.allowedWritingToolsResultOptions == .plainText)
+    } else if #available(macOS 15.0, *) {
+      precondition(view.writingToolsBehavior == .none)
+      precondition(view.allowedWritingToolsResultOptions == .plainText)
+    }
     precondition(
       editor.scroll.frame.height > 100 && view.frame.width > 100, "Editor must fill window")
 
@@ -63,18 +72,21 @@ import TextCore
       precondition(editor.zoomPercent == percent)
     }
 
-    let zoomKey = NSEvent.keyEvent(
-      with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0, windowNumber: 0,
-      context: nil, characters: "=", charactersIgnoringModifiers: "=", isARepeat: false,
-      keyCode: 24)!
-    precondition(view.performKeyEquivalent(with: zoomKey) && editor.zoomPercent == 110)
-
     let pasteboard = NSPasteboard.withUniqueName()
     pasteboard.setString("pasted\r\ntext\r", forType: .string)
     view.selectAll(nil)
     precondition(view.readSelection(from: pasteboard, type: .string))
     precondition(view.string == "pasted\ntext\n", "Paste must normalize line endings internally")
     pasteboard.releaseGlobally()
+
+    view.string = "hello WORLD"
+    view.selectAll(nil)
+    view.capitalizeWord(nil)
+    precondition(view.string == "Hello World", "Capitalize transformation")
+    view.uppercaseWord(nil)
+    precondition(view.string == "HELLO WORLD", "Uppercase transformation")
+    view.lowercaseWord(nil)
+    precondition(view.string == "hello world", "Lowercase transformation")
 
     let appDelegate = AppDelegate()
     appDelegate.buildMenus()
@@ -85,6 +97,52 @@ import TextCore
     precondition(!menuTitles.contains("Settings"), "Settings must not be a top-level menu")
     let editMenu = NSApp.mainMenu!.items[2].submenu!
     precondition(!editMenu.items.contains { $0.title.contains("Bing") })
+    if #available(macOS 15.2, *) {
+      let writingTools = editMenu.items.first { $0.title == "Writing Tools" }!
+      precondition(writingTools.isHidden == !AppPreferences.writingToolsEnabled)
+      let writingToolTitles = writingTools.submenu!.items.map(\.title)
+      precondition(writingToolTitles.contains("Show Writing Tools"))
+      precondition(writingToolTitles.contains("Proofread"))
+      precondition(writingToolTitles.contains("Rewrite"))
+    } else {
+      precondition(!editMenu.items.contains { $0.title == "Writing Tools" })
+    }
+    let find = editMenu.items.first { $0.title == "Find" }!
+    precondition(find.image != nil, "Find menu must use a native search icon")
+    precondition(
+      find.submenu!.items.prefix(2).map(\.title) == ["Find…", "Find and Replace…"],
+      "Find commands must follow the standard macOS order")
+    let transformations = editMenu.items.first { $0.title == "Transformations" }!.submenu!
+    precondition(
+      transformations.items.map(\.title)
+        == ["Make Upper Case", "Make Lower Case", "Capitalize"])
+    precondition(
+      transformations.items.map(\.action)
+        == [
+          #selector(NSResponder.uppercaseWord(_:)), #selector(NSResponder.lowercaseWord(_:)),
+          #selector(NSResponder.capitalizeWord(_:)),
+        ])
+    let redo = editMenu.items.first { $0.title == "Redo" }!
+    precondition(
+      redo.keyEquivalent == "z" && redo.keyEquivalentModifierMask == [.command, .shift],
+      "Redo must use the standard macOS shortcut")
+    let formatMenu = NSApp.mainMenu!.items[3].submenu!
+    let wordWrap = formatMenu.items.first { $0.title == "Word Wrap" }!
+    precondition(
+      wordWrap.keyEquivalent == "w"
+        && wordWrap.keyEquivalentModifierMask == [.command, .shift],
+      "Word Wrap shortcut")
+    let viewMenu = NSApp.mainMenu!.items[4].submenu!
+    let zoomMenu = viewMenu.items.first { $0.title == "Zoom" }!.submenu!
+    let zoomIn = zoomMenu.items.first { $0.title == "Zoom In" }!
+    precondition(
+      zoomIn.keyEquivalent == "+" && zoomIn.keyEquivalentModifierMask == [.command],
+      "Zoom In must display Command-Plus")
+    let documentCount = NSDocumentController.shared.documents.count
+    precondition(appDelegate.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false))
+    precondition(
+      NSDocumentController.shared.documents.count == documentCount,
+      "The reopen delegate must leave untitled-document creation to AppKit")
     precondition(!appDelegate.applicationShouldTerminateAfterLastWindowClosed(NSApp))
 
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

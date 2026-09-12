@@ -2,6 +2,7 @@ import AppKit
 
 let app = NSApplication.shared
 AppPreferences.registerDefaults()
+AppPreferences.applyAppearance()
 #if PERFORMANCE
   if CommandLine.arguments.contains("--benchmark") {
     benchmark()

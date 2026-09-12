@@ -4,11 +4,14 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
   private lazy var settingsController = SettingsWindowController()
   private let recentMenu = NSMenu(title: "Open Recent")
+  private var writingToolsItems: [NSMenuItem] = []
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     AppPreferences.registerDefaults()
     NSWindow.allowsAutomaticWindowTabbing = true
     buildMenus()
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(preferencesDidChange), name: .editorDefaultsDidChange, object: nil)
     NSApp.activate(ignoringOtherApps: true)
   }
 
@@ -17,13 +20,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool
   {
-    if !flag {
-      if NSDocumentController.shared.documents.isEmpty {
-        NSDocumentController.shared.newDocument(nil)
-      } else {
-        NSDocumentController.shared.documents.forEach { $0.showWindows() }
-      }
-    }
     return true
   }
 
@@ -112,14 +108,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     edit.addItem(.separator())
 
     let findItem = NSMenuItem(title: "Find", action: nil, keyEquivalent: "")
+    findItem.image = NSImage(
+      systemSymbolName: "doc.text.magnifyingglass", accessibilityDescription: nil)
     let find = NSMenu(title: "Find")
     findItem.submenu = find
     edit.addItem(findItem)
     add(find, "Find…", #selector(Editor.showFind(_:)), "f")
+    add(
+      find, "Find and Replace…", #selector(Editor.showReplace(_:)), "f",
+      modifiers: [.command, .option])
     add(find, "Find Next", #selector(Editor.findNext(_:)), "g")
     add(
       find, "Find Previous", #selector(Editor.findPrevious(_:)), "g", modifiers: [.command, .shift])
-    add(find, "Replace…", #selector(Editor.showReplace(_:)), "f", modifiers: [.command, .option])
     find.addItem(.separator())
     add(
       find, "Use Selection for Find", #selector(NSTextView.performTextFinderAction(_:)), "e",
@@ -130,6 +130,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
       edit, "Select Lines…", #selector(Editor.selectLines(_:)), "l", modifiers: [.command, .shift])
     add(edit, "Time/Date", #selector(Editor.insertDate(_:)), "\u{F708}", modifiers: [])
     edit.addItem(.separator())
+
+    if #available(macOS 15.2, *) {
+      writingToolsItems = NSMenuItem.writingToolsItems
+      writingToolsItems.forEach(edit.addItem)
+      updateWritingToolsItem()
+    }
 
     let spellingItem = NSMenuItem(title: "Spelling and Grammar", action: nil, keyEquivalent: "")
     let spelling = NSMenu(title: "Spelling and Grammar")
@@ -156,6 +162,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     add(substitutions, "Smart Dashes", #selector(NSTextView.toggleAutomaticDashSubstitution(_:)))
     add(substitutions, "Text Replacement", #selector(NSTextView.toggleAutomaticTextReplacement(_:)))
 
+    let transformationsItem = NSMenuItem(title: "Transformations", action: nil, keyEquivalent: "")
+    let transformations = NSMenu(title: "Transformations")
+    transformationsItem.submenu = transformations
+    edit.addItem(transformationsItem)
+    add(transformations, "Make Upper Case", #selector(NSResponder.uppercaseWord(_:)))
+    add(transformations, "Make Lower Case", #selector(NSResponder.lowercaseWord(_:)))
+    add(transformations, "Capitalize", #selector(NSResponder.capitalizeWord(_:)))
+
     let speechItem = NSMenuItem(title: "Speech", action: nil, keyEquivalent: "")
     let speech = NSMenu(title: "Speech")
     speechItem.submenu = speech
@@ -166,7 +180,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let format = menu("Format")
     add(format, "Show Fonts", #selector(NSFontManager.orderFrontFontPanel(_:)), "t")
     format.addItem(.separator())
-    add(format, "Word Wrap", #selector(Editor.toggleWrap(_:)))
+    add(format, "Word Wrap", #selector(Editor.toggleWrap(_:)), "w", modifiers: [.command, .shift])
     let directionItem = NSMenuItem(title: "Writing Direction", action: nil, keyEquivalent: "")
     let direction = NSMenu(title: "Writing Direction")
     directionItem.submenu = direction
@@ -186,7 +200,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let zoom = NSMenu(title: "Zoom")
     zoomItem.submenu = zoom
     view.addItem(zoomItem)
-    add(zoom, "Zoom In", #selector(Editor.zoomIn(_:)), "=")
+    add(zoom, "Zoom In", #selector(Editor.zoomIn(_:)), "+")
     add(zoom, "Zoom Out", #selector(Editor.zoomOut(_:)), "-")
     add(zoom, "Actual Size", #selector(Editor.zoomReset(_:)), "0")
     view.addItem(.separator())
@@ -244,6 +258,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
   }
 
   @objc private func showSettings(_ sender: Any?) { settingsController.show() }
+
+  @objc private func preferencesDidChange(_ notification: Notification) {
+    updateWritingToolsItem()
+  }
+
+  private func updateWritingToolsItem() {
+    if #available(macOS 15.2, *) {
+      writingToolsItems.forEach { $0.isHidden = !AppPreferences.writingToolsEnabled }
+    } else {
+      writingToolsItems.forEach { $0.isHidden = true }
+    }
+  }
 
   @objc private func openRecent(_ sender: NSMenuItem) {
     guard let url = sender.representedObject as? URL else { return }
