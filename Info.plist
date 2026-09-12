@@ -10,6 +10,13 @@
 			<key>CFBundleTypeExtensions</key>
 			<array>
 				<string>txt</string>
+				<string>text</string>
+				<string>log</string>
+			</array>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.plain-text</string>
+				<string>public.text</string>
 			</array>
 			<key>CFBundleTypeName</key>
 			<string>Plain Text</string>
@@ -25,6 +32,8 @@
 	<string>PoteNad</string>
 	<key>CFBundleIconFile</key>
 	<string>PoteNad</string>
+	<key>CFBundleIconName</key>
+	<string>PoteNad</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.robertmorelli.notepad</string>
 	<key>CFBundleName</key>
@@ -32,9 +41,11 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0</string>
+	<string>2.0.0</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>2</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>NSHighResolutionCapable</key>
@@ -43,5 +54,7 @@
 	<string>Copyright © 2026 Robert Morelli. MIT License.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>NSDocumentControllerClass</key>
+	<string>PoteNadDocumentController</string>
 </dict>
 </plist>

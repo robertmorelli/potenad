@@ -1,167 +1,253 @@
 import AppKit
+import TextCore
 
-private final class SettingsContentView: NSView {
-  override var isFlipped: Bool { true }
+enum PreferenceKey {
+  static let fontName = "fontName"
+  static let fontSize = "fontSize"
+  static let wrap = "wrap"
+  static let status = "status"
+  static let encoding = "encoding"
+  static let lineEnding = "lineEnding"
+  static let checkSpelling = "checkSpelling"
+}
+
+extension Notification.Name {
+  static let editorDefaultsDidChange = Notification.Name("EditorDefaultsDidChange")
+}
+
+enum AppPreferences {
+  static func registerDefaults() {
+    UserDefaults.standard.register(defaults: [
+      PreferenceKey.fontName: "Menlo",
+      PreferenceKey.fontSize: 12.0,
+      PreferenceKey.wrap: true,
+      PreferenceKey.status: true,
+      PreferenceKey.encoding: TextEncoding.utf8.rawValue,
+      PreferenceKey.lineEnding: LineEnding.lf.rawValue,
+      PreferenceKey.checkSpelling: false,
+    ])
+  }
+
+  static var font: NSFont {
+    let size = UserDefaults.standard.double(forKey: PreferenceKey.fontSize)
+    let validSize = size.isFinite && (1...512).contains(size) ? size : 12
+    return NSFont(
+      name: UserDefaults.standard.string(forKey: PreferenceKey.fontName) ?? "Menlo",
+      size: validSize) ?? .monospacedSystemFont(ofSize: validSize, weight: .regular)
+  }
+
+  static var encoding: TextEncoding {
+    TextEncoding(rawValue: UserDefaults.standard.string(forKey: PreferenceKey.encoding) ?? "")
+      ?? .utf8
+  }
+
+  static var lineEnding: LineEnding {
+    LineEnding(rawValue: UserDefaults.standard.string(forKey: PreferenceKey.lineEnding) ?? "")
+      ?? .lf
+  }
 }
 
 @MainActor
-final class SettingsPane: PanelBackgroundView, NSTextFieldDelegate, NSMenuDelegate {
-  weak var editor: Editor?
-  let family = NSPopUpButton()
-  let face = NSPopUpButton()
-  let size = NSTextField()
-  let wrapping = NSButton(checkboxWithTitle: "Wrap at characters", target: nil, action: nil)
-  let statusBar = NSButton(checkboxWithTitle: "Show status bar", target: nil, action: nil)
-  let zoom = NSPopUpButton()
+final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, NSMenuDelegate {
+  private let family = NSPopUpButton()
+  private let face = NSPopUpButton()
+  private let size = NSTextField()
+  private let wrapping = NSButton(
+    checkboxWithTitle: "Wrap text in new windows", target: nil, action: nil)
+  private let statusBar = NSButton(
+    checkboxWithTitle: "Show status bar in new windows", target: nil, action: nil)
+  private let spelling = NSButton(
+    checkboxWithTitle: "Check spelling while typing", target: nil, action: nil)
+  private let encoding = NSPopUpButton()
+  private let lineEnding = NSPopUpButton()
   private var fontNames: [String] = []
   private var familiesLoaded = false
   private var facesLoaded = false
-  private var zoomLoaded = false
-  private static var families: [String]?
-  private static var facesByFamily: [String: [(name: String, title: String)]] = [:]
   private let number = NumberFormatter()
 
-  init(editor: Editor) {
-    self.editor = editor
-    super.init(frame: NSRect(x: 0, y: 0, width: 320, height: 270))
+  init() {
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 500, height: 330),
+      styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    window.title = "PoteNad Settings"
+    window.isReleasedWhenClosed = false
+    super.init(window: window)
+    window.standardWindowButton(.miniaturizeButton)?.isEnabled = false
+    window.standardWindowButton(.zoomButton)?.isEnabled = false
+
     number.numberStyle = .decimal
     number.maximumFractionDigits = 2
     number.usesGroupingSeparator = false
-    // Only the selected font is needed to show settings. Enumerate menus on demand.
-    family.addItem(withTitle: editor.baseFont.familyName ?? "Menlo")
-    fontNames = [editor.baseFont.fontName]
-    face.addItem(
-      withTitle: editor.baseFont.fontDescriptor.object(forKey: .face) as? String ?? "Regular")
-    family.menu?.delegate = self
-    face.menu?.delegate = self
-    size.stringValue =
-      number.string(from: NSNumber(value: Double(editor.baseFont.pointSize))) ?? "12"
+    size.formatter = number
     size.delegate = self
     size.toolTip = "Font size in points (1–512)"
-    zoom.addItem(withTitle: "\(editor.zoomPercent)%")
-    zoom.menu?.delegate = self
-    syncControls()
+
+    family.menu?.delegate = self
+    face.menu?.delegate = self
     family.target = self
     family.action = #selector(changeFamily)
     face.target = self
     face.action = #selector(changeFace)
     wrapping.target = self
-    wrapping.action = #selector(changeWrap)
+    wrapping.action = #selector(changeOption)
     statusBar.target = self
-    statusBar.action = #selector(changeStatus)
-    zoom.target = self
-    zoom.action = #selector(changeZoom)
+    statusBar.action = #selector(changeOption)
+    spelling.target = self
+    spelling.action = #selector(changeOption)
+    encoding.target = self
+    encoding.action = #selector(changeOption)
+    lineEnding.target = self
+    lineEnding.action = #selector(changeOption)
 
-    let close = NSButton(title: "×", target: editor, action: #selector(Editor.showSettings(_:)))
-    close.toolTip = "Close Settings (⌘,)"
-    let page = NSButton(
-      title: "Page Setup…", target: editor.note, action: #selector(PoteNadDocument.pageSetup(_:)))
-    let content = SettingsContentView(frame: NSRect(x: 0, y: 0, width: 320, height: 280))
-    close.frame = NSRect(x: 280, y: 8, width: 28, height: 24)
-    content.addSubview(close)
-    let rows: [(String, NSView)] = [
-      ("Family:", family), ("Typeface:", face), ("Size (pt):", size),
-      ("Zoom:", zoom), ("", wrapping), ("", statusBar), ("", page),
-    ]
-    for (index, row) in rows.enumerated() {
-      let y = CGFloat(40 + index * 32)
-      if !row.0.isEmpty {
-        let label = NSTextField(labelWithString: row.0)
-        label.alignment = .right
-        label.frame = NSRect(x: 8, y: y + 3, width: 86, height: 20)
-        content.addSubview(label)
-      }
-      row.1.frame = NSRect(x: 104, y: y, width: 200, height: 26)
-      content.addSubview(row.1)
+    for value in TextEncoding.allCases {
+      encoding.addItem(withTitle: value.displayName)
+      encoding.lastItem?.representedObject = value.rawValue
     }
-    let scroll = NSScrollView(frame: bounds)
-    scroll.autoresizingMask = [.width, .height]
-    scroll.hasVerticalScroller = true
-    scroll.autohidesScrollers = true
-    scroll.drawsBackground = false
-    scroll.documentView = content
-    addSubview(scroll)
-    widthAnchor.constraint(equalToConstant: 320).isActive = true
+    for value in LineEnding.allCases {
+      lineEnding.addItem(withTitle: value.displayName)
+      lineEnding.lastItem?.representedObject = value.rawValue
+    }
+
+    let general = NSTextField(labelWithString: "General")
+    general.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+    let grid = NSGridView(views: [
+      [NSTextField(labelWithString: "Default font:"), family],
+      [NSTextField(labelWithString: "Typeface:"), face],
+      [NSTextField(labelWithString: "Size:"), size],
+      [NSTextField(labelWithString: "Default encoding:"), encoding],
+      [NSTextField(labelWithString: "Default line endings:"), lineEnding],
+    ])
+    grid.rowSpacing = 8
+    grid.columnSpacing = 12
+    grid.column(at: 0).xPlacement = .trailing
+    grid.column(at: 1).width = 260
+    size.widthAnchor.constraint(equalToConstant: 90).isActive = true
+
+    let restore = NSButton(
+      title: "Restore Defaults", target: self, action: #selector(restoreDefaults))
+    let options = NSStackView(views: [wrapping, statusBar, spelling])
+    options.orientation = .vertical
+    options.alignment = .leading
+    options.spacing = 6
+    let buttons = NSStackView(views: [NSView(), restore])
+    buttons.orientation = .horizontal
+
+    let content = NSStackView(views: [general, grid, options, buttons])
+    content.orientation = .vertical
+    content.alignment = .leading
+    content.spacing = 14
+    content.edgeInsets = NSEdgeInsets(top: 22, left: 24, bottom: 20, right: 24)
+    window.contentView = content
+    buttons.widthAnchor.constraint(equalTo: grid.widthAnchor).isActive = true
+    syncControls()
   }
+
   required init?(coder: NSCoder) { fatalError() }
 
-  func syncControls() {
-    guard let editor else { return }
-    let title = "\(editor.zoomPercent)%"
-    if zoom.titleOfSelectedItem != title {
-      if !zoomLoaded { zoom.removeAllItems(); zoom.addItem(withTitle: title) }
-      zoom.selectItem(withTitle: title)
-    }
-    wrapping.state = editor.wrap ? .on : .off
-    statusBar.state = editor.statusVisible ? .on : .off
+  func show() {
+    syncControls()
+    showWindow(nil)
+    window?.center()
+    window?.makeKeyAndOrderFront(nil)
+    NSApp.activate(ignoringOtherApps: true)
   }
+
+  private func syncControls() {
+    let font = AppPreferences.font
+    family.removeAllItems()
+    family.addItem(withTitle: font.familyName ?? "Menlo")
+    fontNames = [font.fontName]
+    face.removeAllItems()
+    face.addItem(withTitle: font.fontDescriptor.object(forKey: .face) as? String ?? "Regular")
+    size.stringValue = number.string(from: NSNumber(value: Double(font.pointSize))) ?? "12"
+    wrapping.state = UserDefaults.standard.bool(forKey: PreferenceKey.wrap) ? .on : .off
+    statusBar.state = UserDefaults.standard.bool(forKey: PreferenceKey.status) ? .on : .off
+    spelling.state = UserDefaults.standard.bool(forKey: PreferenceKey.checkSpelling) ? .on : .off
+    encoding.selectItem(withTitle: AppPreferences.encoding.displayName)
+    lineEnding.selectItem(withTitle: AppPreferences.lineEnding.displayName)
+    familiesLoaded = false
+    facesLoaded = false
+  }
+
   func menuNeedsUpdate(_ menu: NSMenu) {
-    if menu === zoom.menu, !zoomLoaded {
-      let selected = zoom.titleOfSelectedItem
-      zoom.removeAllItems()
-      zoom.addItems(withTitles: stride(from: 10, through: 500, by: 10).map { "\($0)%" })
-      if let selected { zoom.selectItem(withTitle: selected) }
-      zoomLoaded = true
-    } else if menu === family.menu, !familiesLoaded {
+    if menu === family.menu, !familiesLoaded {
       let selected = family.titleOfSelectedItem
-      if Self.families == nil {
-        Self.families = NSFontManager.shared.availableFontFamilies.sorted()
-      }
       family.removeAllItems()
-      family.addItems(withTitles: Self.families!)
+      family.addItems(withTitles: NSFontManager.shared.availableFontFamilies.sorted())
       if let selected { family.selectItem(withTitle: selected) }
       familiesLoaded = true
     } else if menu === face.menu, !facesLoaded {
-      let selected = editor?.baseFont.fontName
       updateFaces()
-      if let selected, let index = fontNames.firstIndex(of: selected) { face.selectItem(at: index) }
     }
   }
+
   private func updateFaces() {
     let familyName = family.titleOfSelectedItem ?? "Menlo"
-    if Self.facesByFamily[familyName] == nil {
-      Self.facesByFamily[familyName] =
-        (NSFontManager.shared.availableMembers(ofFontFamily: familyName) ?? []).compactMap {
-          member in
-          guard let name = member[0] as? String, let title = member[1] as? String else {
-            return nil
-          }
-          return (name, title)
-        }
+    let members = (NSFontManager.shared.availableMembers(ofFontFamily: familyName) ?? []).compactMap
+    {
+      member -> (String, String)? in
+      guard let name = member[0] as? String, let title = member[1] as? String else { return nil }
+      return (name, title)
     }
-    let members = Self.facesByFamily[familyName]!
     face.removeAllItems()
-    fontNames = members.map(\.name)
-    face.addItems(withTitles: members.map(\.title))
+    fontNames = members.map(\.0)
+    face.addItems(withTitles: members.map(\.1))
     face.selectItem(withTitle: "Regular")
     facesLoaded = true
   }
+
   private func applyFont() {
-    guard let editor else { return }
     let text = size.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
     guard let points = Double(text.replacingOccurrences(of: number.decimalSeparator, with: ".")),
       points.isFinite, (1...512).contains(points),
       fontNames.indices.contains(face.indexOfSelectedItem),
       let font = NSFont(name: fontNames[face.indexOfSelectedItem], size: points)
     else { return }
-    editor.setBaseFont(font)
+    UserDefaults.standard.set(font.fontName, forKey: PreferenceKey.fontName)
+    UserDefaults.standard.set(font.pointSize, forKey: PreferenceKey.fontSize)
+    notifyChange()
   }
+
   func controlTextDidChange(_ notification: Notification) { applyFont() }
+
   func controlTextDidEndEditing(_ notification: Notification) {
-    guard let editor else { return }
     size.stringValue =
-      number.string(from: NSNumber(value: Double(editor.baseFont.pointSize))) ?? "12"
+      number.string(from: NSNumber(value: Double(AppPreferences.font.pointSize))) ?? "12"
   }
-  @objc func changeFamily() {
+
+  @objc private func changeFamily() {
     updateFaces()
     applyFont()
   }
-  @objc func changeFace() { applyFont() }
-  @objc func changeWrap() { editor?.toggleWrap(nil) }
-  @objc func changeStatus() { editor?.toggleStatus(nil) }
-  @objc func changeZoom() {
-    if let title = zoom.titleOfSelectedItem, let percent = Int(title.dropLast()) {
-      editor?.setZoom(percent)
+
+  @objc private func changeFace() { applyFont() }
+
+  @objc private func changeOption() {
+    UserDefaults.standard.set(wrapping.state == .on, forKey: PreferenceKey.wrap)
+    UserDefaults.standard.set(statusBar.state == .on, forKey: PreferenceKey.status)
+    UserDefaults.standard.set(spelling.state == .on, forKey: PreferenceKey.checkSpelling)
+    if let value = encoding.selectedItem?.representedObject as? String {
+      UserDefaults.standard.set(value, forKey: PreferenceKey.encoding)
     }
+    if let value = lineEnding.selectedItem?.representedObject as? String {
+      UserDefaults.standard.set(value, forKey: PreferenceKey.lineEnding)
+    }
+    notifyChange()
+  }
+
+  @objc private func restoreDefaults() {
+    for key in [
+      PreferenceKey.fontName, PreferenceKey.fontSize, PreferenceKey.wrap, PreferenceKey.status,
+      PreferenceKey.encoding, PreferenceKey.lineEnding, PreferenceKey.checkSpelling,
+    ] {
+      UserDefaults.standard.removeObject(forKey: key)
+    }
+    AppPreferences.registerDefaults()
+    syncControls()
+    notifyChange()
+  }
+
+  private func notifyChange() {
+    NotificationCenter.default.post(name: .editorDefaultsDidChange, object: nil)
   }
 }

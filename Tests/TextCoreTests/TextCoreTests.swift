@@ -6,27 +6,75 @@ final class TextCoreTests: XCTestCase {
   func testUTF8RoundTrip() throws {
     let content = "café 👩🏽‍💻 中文\nsecond\n"
     let file = TextFile(text: content)
-    XCTAssertEqual(file.data(), Data(content.utf8))
-    XCTAssertEqual(try TextFile(data: file.data()).text, content)
-    let withBOM = Data([0xEF, 0xBB, 0xBF]) + Data(content.utf8)
-    XCTAssertEqual(try TextFile(data: withBOM).data(), Data(content.utf8))
+    XCTAssertEqual(try file.data(), Data(content.utf8))
+    let reopened = try TextFile(data: file.data())
+    XCTAssertEqual(reopened.text, content)
+    XCTAssertEqual(reopened.encoding, .utf8)
+    XCTAssertEqual(reopened.lineEnding, .lf)
   }
-  func testAllLineEndingsSaveAsLF() throws {
-    for input in ["a\r\nb\r\n", "a\rb\r", "a\nb\n", "a\r\nb\r"] {
+
+  func testUnicodeEncodingsRoundTrip() throws {
+    let content = "café 中文\nsecond\n"
+    for encoding in [TextEncoding.utf8BOM, .utf16LittleEndian, .utf16BigEndian] {
+      let data = try TextFile(text: content, encoding: encoding).data()
+      let reopened = try TextFile(data: data)
+      XCTAssertEqual(reopened.text, content)
+      XCTAssertEqual(reopened.encoding, encoding)
+    }
+  }
+
+  func testASCIILookingUTF16WithoutBOM() throws {
+    let data = try XCTUnwrap("One\r\ntwo\r\n".data(using: .utf16LittleEndian))
+    let reopened = try TextFile(data: data)
+    XCTAssertEqual(reopened.text, "One\ntwo\n")
+    XCTAssertEqual(reopened.encoding, .utf16LittleEndian)
+  }
+
+  func testLineEndingsAreDetectedAndPreserved() throws {
+    for (ending, input) in [
+      (LineEnding.crlf, "a\r\nb\r\n"), (.cr, "a\rb\r"), (.lf, "a\nb\n"),
+    ] {
       let loaded = try TextFile(data: Data(input.utf8))
       XCTAssertEqual(loaded.text, "a\nb\n")
-      XCTAssertEqual(loaded.data(), Data("a\nb\n".utf8))
-      // Also normalize CR introduced directly into the buffer.
-      XCTAssertEqual(TextFile(text: input).data(), Data("a\nb\n".utf8))
+      XCTAssertEqual(loaded.lineEnding, ending)
+      XCTAssertFalse(loaded.hasMixedLineEndings)
+      XCTAssertEqual(try loaded.data(), Data(input.utf8))
     }
   }
-  func testNonUTF8Rejected() {
-    for bytes: [UInt8] in [
-      [0xFF, 0xFE, 0x61, 0x00], [0xFE, 0xFF, 0x00, 0x61], [0xE9], [0xC3, 0x28],
-    ] {
-      XCTAssertThrowsError(try TextFile(data: Data(bytes)))
-    }
+
+  func testMixedLineEndingsUseTheMostCommonStyle() throws {
+    let loaded = try TextFile(data: Data("a\r\nb\r\nc\n".utf8))
+    XCTAssertTrue(loaded.hasMixedLineEndings)
+    XCTAssertEqual(loaded.lineEnding, .crlf)
+    XCTAssertEqual(loaded.text, "a\nb\nc\n")
+    XCTAssertEqual(try loaded.data(), Data("a\r\nb\r\nc\r\n".utf8))
   }
+
+  func testLegacyEncodingFallback() throws {
+    let input = Data([0x63, 0x61, 0x66, 0xE9])
+    let loaded = try TextFile(data: input, encoding: .windows1252)
+    XCTAssertEqual(loaded.text, "café")
+    XCTAssertEqual(loaded.encoding, .windows1252)
+    XCTAssertEqual(try loaded.data(), input)
+  }
+
+  func testRequestedEncodingOverridesAutomaticDetection() throws {
+    let input = Data([0xC3, 0xA9])
+    let automatic = try TextFile(data: input)
+    let requested = try TextFile(data: input, encoding: .windows1252)
+    XCTAssertEqual(automatic.text, "é")
+    XCTAssertEqual(requested.text, "Ã©")
+    XCTAssertEqual(requested.encoding, .windows1252)
+  }
+
+  func testBinaryDataIsRejected() {
+    XCTAssertThrowsError(try TextFile(data: Data([0, 1, 2, 3, 4, 5])))
+  }
+
+  func testUnrepresentableLegacySaveIsRejected() {
+    XCTAssertThrowsError(try TextFile(text: "中文", encoding: .windows1252).data())
+  }
+
   func testIncrementalIndexAgainstFullRebuild() {
     let text = NSMutableString(string: "one\ntwo\n👋 three\n")
     var incremental = LineIndex()
@@ -53,6 +101,7 @@ final class TextCoreTests: XCTestCase {
       }
     }
   }
+
   func testLargeDocumentIndex() {
     let text = String(repeating: "a short line of plain text\n", count: 400_000) as NSString
     var index = LineIndex()

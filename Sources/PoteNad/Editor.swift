@@ -3,6 +3,7 @@ import TextCore
 
 final class PlainTextView: NSTextView {
   weak var editor: Editor?
+
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
     let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
     guard modifiers.contains(.command), !modifiers.contains(.option), !modifiers.contains(.control),
@@ -17,6 +18,22 @@ final class PlainTextView: NSTextView {
     default: return super.performKeyEquivalent(with: event)
     }
     return true
+  }
+
+  override func magnify(with event: NSEvent) {
+    guard let editor else {
+      super.magnify(with: event)
+      return
+    }
+    editor.setZoom(editor.zoomPercent + Int((event.magnification * 100).rounded()))
+  }
+
+  override func changeFont(_ sender: Any?) {
+    guard let editor, let manager = sender as? NSFontManager else {
+      super.changeFont(sender)
+      return
+    }
+    editor.setBaseFont(manager.convert(editor.baseFont))
   }
 }
 
@@ -45,18 +62,19 @@ extension PlainTextView {
 }
 
 final class Editor: NSWindowController, NSTextViewDelegate, @preconcurrency NSTextStorageDelegate,
-  NSMenuItemValidation, NSWindowDelegate
+  NSMenuItemValidation
 {
   let textView = PlainTextView(frame: NSRect(x: 0, y: 0, width: 850, height: 556))
   let scroll = EditorScrollView()
   let status = NSTextField(labelWithString: "")
-  let statusBar = PanelBackgroundView()
+  let statusDetails = NSTextField(labelWithString: "")
+  let statusBar = NSVisualEffectView()
   private lazy var statusHeight = statusBar.heightAnchor.constraint(equalToConstant: 24)
   var index = LineIndex()
-  var wrap = UserDefaults.standard.bool(forKey: "wrap")
-  var statusVisible = UserDefaults.standard.object(forKey: "status") as? Bool ?? true
+  var wrap = UserDefaults.standard.bool(forKey: PreferenceKey.wrap)
+  var statusVisible = UserDefaults.standard.bool(forKey: PreferenceKey.status)
   private(set) var zoomPercent = 100
-  private(set) var baseFont = Editor.savedFont()
+  private(set) var baseFont = AppPreferences.font
   private let paragraph: NSParagraphStyle = {
     let style = NSMutableParagraphStyle()
     style.lineBreakMode = .byCharWrapping
@@ -67,36 +85,28 @@ final class Editor: NSWindowController, NSTextViewDelegate, @preconcurrency NSTe
     .font: displayFont, .paragraphStyle: paragraph, .foregroundColor: NSColor.textColor,
   ]
   private var lastStatus = ""
-  static func savedFont() -> NSFont {
-    let size = UserDefaults.standard.double(forKey: "fontSize")
-    let validSize = size.isFinite && (1...512).contains(size) ? size : 12
-    return NSFont(
-      name: UserDefaults.standard.string(forKey: "fontName") ?? "Menlo", size: validSize)
-      ?? .monospacedSystemFont(ofSize: validSize, weight: .regular)
-  }
-  var finder: FindPanel?
-  private let body = NSStackView()
-  private(set) var settingsPane: SettingsPane?
-  private(set) var settingsVisible = false
   unowned let note: PoteNadDocument
+
   init(document: PoteNadDocument) {
-    self.note = document
+    note = document
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 850, height: 580),
       styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false
     )
     super.init(window: window)
-    window.delegate = self
     textView.editor = self
     window.minSize = NSSize(width: 420, height: 240)
     window.center()
-    window.setFrameAutosaveName("NotepadWindow")
+    window.setFrameAutosaveName("PoteNadDocumentWindow")
+
     let root = NSView()
     window.contentView = root
     scroll.hasVerticalScroller = true
     scroll.autohidesScrollers = true
     scroll.borderType = .noBorder
-    textView.usesFontPanel = false
+    textView.usesFontPanel = true
+    textView.usesFindBar = true
+    textView.isIncrementalSearchingEnabled = true
     textView.isRichText = false
     textView.importsGraphics = false
     textView.allowsUndo = true
@@ -104,13 +114,14 @@ final class Editor: NSWindowController, NSTextViewDelegate, @preconcurrency NSTe
     textView.isAutomaticDashSubstitutionEnabled = false
     textView.isAutomaticTextReplacementEnabled = false
     textView.isAutomaticSpellingCorrectionEnabled = false
-    textView.isContinuousSpellCheckingEnabled = false
+    textView.isContinuousSpellCheckingEnabled = UserDefaults.standard.bool(
+      forKey: PreferenceKey.checkSpelling)
     textView.isGrammarCheckingEnabled = false
     textView.isAutomaticLinkDetectionEnabled = false
     textView.isAutomaticDataDetectionEnabled = false
     textView.isAutomaticTextCompletionEnabled = false
     if #available(macOS 15.0, *) { textView.writingToolsBehavior = .none }
-    textView.textContainerInset = NSSize(width: 4, height: 5)
+    textView.textContainerInset = NSSize(width: 6, height: 6)
     textView.font = baseFont
     textView.isVerticallyResizable = true
     textView.minSize = .zero
@@ -118,53 +129,57 @@ final class Editor: NSWindowController, NSTextViewDelegate, @preconcurrency NSTe
       width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
     textView.layoutManager?.allowsNonContiguousLayout = true
     loadText(document.file.text)
-    // NSTextStorage owns the live buffer after loading.
     document.file.text = ""
     textView.delegate = self
     textView.textStorage?.delegate = self
     scroll.documentView = textView
-    body.translatesAutoresizingMaskIntoConstraints = false
-    body.orientation = .horizontal
-    body.spacing = 0
-    body.alignment = .top
-    body.addArrangedSubview(scroll)
-    root.addSubview(body)
+
+    statusBar.material = .headerView
+    statusBar.blendingMode = .withinWindow
+    statusBar.state = .followsWindowActiveState
+    status.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+    statusDetails.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+    status.textColor = .secondaryLabelColor
+    statusDetails.textColor = .secondaryLabelColor
+    status.lineBreakMode = .byTruncatingTail
+    statusDetails.alignment = .right
+    statusDetails.lineBreakMode = .byTruncatingHead
+
+    root.addSubview(scroll)
     root.addSubview(statusBar)
     statusBar.addSubview(status)
-    statusBar.translatesAutoresizingMaskIntoConstraints = false
-    scroll.translatesAutoresizingMaskIntoConstraints = false
-    status.translatesAutoresizingMaskIntoConstraints = false
+    statusBar.addSubview(statusDetails)
+    for view in [scroll, statusBar, status, statusDetails] {
+      view.translatesAutoresizingMaskIntoConstraints = false
+    }
     NSLayoutConstraint.activate([
-      body.topAnchor.constraint(equalTo: root.topAnchor),
-      body.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-      body.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-      body.bottomAnchor.constraint(equalTo: statusBar.topAnchor),
+      scroll.topAnchor.constraint(equalTo: root.topAnchor),
+      scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+      scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+      scroll.bottomAnchor.constraint(equalTo: statusBar.topAnchor),
       statusBar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
       statusBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
       statusBar.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-      status.leadingAnchor.constraint(equalTo: statusBar.leadingAnchor),
-      status.trailingAnchor.constraint(equalTo: statusBar.trailingAnchor),
-      status.bottomAnchor.constraint(equalTo: statusBar.bottomAnchor),
-      scroll.heightAnchor.constraint(equalTo: body.heightAnchor),
-
       statusHeight,
+      status.leadingAnchor.constraint(equalTo: statusBar.leadingAnchor, constant: 8),
+      status.centerYAnchor.constraint(equalTo: statusBar.centerYAnchor),
+      statusDetails.leadingAnchor.constraint(
+        greaterThanOrEqualTo: status.trailingAnchor, constant: 12),
+      statusDetails.trailingAnchor.constraint(equalTo: statusBar.trailingAnchor, constant: -8),
+      statusDetails.centerYAnchor.constraint(equalTo: statusBar.centerYAnchor),
     ])
-    status.lineBreakMode = .byTruncatingTail
-    updateStatusSize()
-    status.textColor = .secondaryLabelColor
-    status.isHidden = !statusVisible
-    statusBar.isHidden = !statusVisible
+    setStatusVisible(statusVisible)
     applyWrap()
     updateStatus()
-    // Construct fixed controls with the window, so the Settings shortcut only reveals them.
-    let pane = SettingsPane(editor: self)
-    settingsPane = pane
-    pane.isHidden = true
-    body.addArrangedSubview(pane)
-    pane.heightAnchor.constraint(equalTo: body.heightAnchor).isActive = true
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(defaultsDidChange), name: .editorDefaultsDidChange, object: nil)
     window.makeFirstResponder(textView)
   }
+
   required init?(coder: NSCoder) { fatalError() }
+
+  deinit { NotificationCenter.default.removeObserver(self) }
+
   func loadText(_ text: String) {
     textView.textStorage?.setAttributedString(
       NSAttributedString(string: text, attributes: displayAttributes))
@@ -174,16 +189,16 @@ final class Editor: NSWindowController, NSTextViewDelegate, @preconcurrency NSTe
     textView.undoManager?.removeAllActions()
     updateStatus()
   }
+
   func textStorage(
     _ storage: NSTextStorage, willProcessEditing mask: NSTextStorageEditActions, range: NSRange,
     changeInLength delta: Int
   ) {
-    // Undo can restore attributed text from before a font change. Normalize
-    // only the edited span; ordinary typing must not restyle the whole file.
     if mask.contains(.editedCharacters), range.length > 0 {
       storage.setAttributes(displayAttributes, range: range)
     }
   }
+
   func textStorage(
     _ textStorage: NSTextStorage, didProcessEditing editedMask: NSTextStorageEditActions,
     range editedRange: NSRange, changeInLength delta: Int
@@ -192,83 +207,63 @@ final class Editor: NSWindowController, NSTextViewDelegate, @preconcurrency NSTe
       index.update(textStorage.mutableString, editedRange: editedRange, delta: delta)
     }
   }
+
   func undoManager(for view: NSTextView) -> UndoManager? { note.undoManager }
+
   func textDidChange(_ notification: Notification) {
     note.syncEditedIndicator()
     updateStatus()
   }
-  func textViewDidChangeSelection(_ notification: Notification) {
-    updateStatus()
-  }
+
+  func textViewDidChangeSelection(_ notification: Notification) { updateStatus() }
+
   func updateStatus() {
     guard statusVisible else { return }
-    let p = index.position(textView.selectedRange().location)
-    let value = "   Ln \(p.line), Col \(p.column)     |     \(zoomPercent)%"
+    let position = index.position(textView.selectedRange().location)
+    let ending = note.file.hasMixedLineEndings ? "Mixed" : note.file.lineEnding.displayName
+    let value =
+      "Ln \(position.line), Col \(position.column)|\(ending)|\(note.file.encoding.displayName)|\(zoomPercent)%"
     guard value != lastStatus else { return }
     lastStatus = value
-    status.stringValue = value
+    status.stringValue = "Ln \(position.line), Col \(position.column)"
+    statusDetails.stringValue = "\(ending)   \(note.file.encoding.displayName)   \(zoomPercent)%"
   }
+
   func applyWrap() {
     scroll.hasHorizontalScroller = !wrap
     textView.isHorizontallyResizable = !wrap
     textView.autoresizingMask = wrap ? [.width] : []
     textView.textContainer?.widthTracksTextView = wrap
-    if !wrap {
-      textView.textContainer?.containerSize = NSSize(
-        width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-    }
+    textView.textContainer?.containerSize =
+      wrap
+      ? NSSize(width: scroll.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
+      : NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
     scroll.tile()
   }
+
   @objc func toggleWrap(_ sender: Any?) {
     wrap.toggle()
-    UserDefaults.standard.set(wrap, forKey: "wrap")
-    if settingsVisible { settingsPane?.syncControls() }
     applyWrap()
   }
-  @objc func toggleStatus(_ sender: Any?) {
-    statusVisible.toggle()
-    status.isHidden = !statusVisible
-    statusBar.isHidden = !statusVisible
-    updateStatusSize()
-    UserDefaults.standard.set(statusVisible, forKey: "status")
-    if settingsVisible { settingsPane?.syncControls() }
+
+  @objc func toggleStatus(_ sender: Any?) { setStatusVisible(!statusVisible) }
+
+  private func setStatusVisible(_ visible: Bool) {
+    statusVisible = visible
+    statusBar.isHidden = !visible
+    statusHeight.constant = visible ? 24 : 0
     updateStatus()
   }
-  @objc func showSettings(_ sender: Any?) {
-    settingsVisible.toggle()
-    if settingsVisible {
-      finder?.close()
-      settingsPane?.syncControls()
-      settingsPane?.isHidden = false
-    } else {
-      window?.makeFirstResponder(textView)
-      settingsPane?.isHidden = true
-    }
-    // Let AppKit perform one viewport layout for the next frame; do not force
-    // the entire text document to size itself just to show a sidebar.
-  }
-  func windowDidResize(_ notification: Notification) { finder?.attach() }
-  func windowDidMove(_ notification: Notification) { finder?.attach() }
-  func setBaseFont(_ font: NSFont, persist: Bool = true) {
-    guard font.pointSize.isFinite, (1...512).contains(font.pointSize) else {
+
+  func setBaseFont(_ font: NSFont) {
+    guard font.pointSize.isFinite, (1...512).contains(font.pointSize), baseFont != font else {
       return
     }
-    guard baseFont != font else { return }
     baseFont = font
-    if persist {
-      UserDefaults.standard.set(font.fontName, forKey: "fontName")
-      UserDefaults.standard.set(font.pointSize, forKey: "fontSize")
-    }
     applyFont()
   }
-  func updateStatusSize() {
-    let scale = CGFloat(zoomPercent) / 100
-    status.font = .systemFont(ofSize: 11 * scale)
-    statusHeight.constant = statusVisible ? 24 * scale : 0
-  }
+
   func applyFont() {
-    updateStatusSize()
-    window?.contentView?.layoutSubtreeIfNeeded()
     displayFont =
       NSFont(
         descriptor: baseFont.fontDescriptor, size: baseFont.pointSize * CGFloat(zoomPercent) / 100)
@@ -277,45 +272,46 @@ final class Editor: NSWindowController, NSTextViewDelegate, @preconcurrency NSTe
     textView.font = displayFont
     textView.defaultParagraphStyle = paragraph
     textView.typingAttributes = displayAttributes
+    if let storage = textView.textStorage, storage.length > 0 {
+      storage.addAttribute(
+        .font, value: displayFont, range: NSRange(location: 0, length: storage.length))
+    }
     textView.scrollRangeToVisible(textView.selectedRange())
     updateStatus()
   }
+
   @objc func zoomIn(_ sender: Any?) { setZoom(zoomPercent + 10) }
   @objc func zoomOut(_ sender: Any?) { setZoom(zoomPercent - 10) }
   @objc func zoomReset(_ sender: Any?) { setZoom(100) }
+
   func setZoom(_ percent: Int) {
     let clamped = min(500, max(10, percent))
     guard clamped != zoomPercent else { return }
     zoomPercent = clamped
-    if settingsVisible { settingsPane?.syncControls() }
     applyFont()
   }
+
   static func timestamp() -> String {
-    let f = DateFormatter()
-    f.dateStyle = .short
-    f.timeStyle = .short
-    return f.string(from: Date())
+    let formatter = DateFormatter()
+    formatter.dateStyle = .short
+    formatter.timeStyle = .short
+    return formatter.string(from: Date())
   }
+
   @objc func insertDate(_ sender: Any?) {
     textView.insertText(Self.timestamp(), replacementRange: textView.selectedRange())
   }
-  @objc func searchWeb(_ sender: Any?) {
-    let selected = (textView.string as NSString).substring(with: textView.selectedRange())
-    guard !selected.isEmpty else { return }
-    var url = URLComponents(string: "https://www.bing.com/search")!
-    url.queryItems = [URLQueryItem(name: "q", value: selected)]
-    NSWorkspace.shared.open(url.url!)
-  }
+
   @objc func goTo(_ sender: Any?) {
-    let a = NSAlert()
-    a.messageText = "Go To Line"
-    a.addButton(withTitle: "Go To")
-    a.addButton(withTitle: "Cancel")
+    let alert = NSAlert()
+    alert.messageText = "Go to Line"
+    alert.addButton(withTitle: "Go")
+    alert.addButton(withTitle: "Cancel")
     let field = NSTextField(string: String(index.position(textView.selectedRange().location).line))
     field.frame = NSRect(x: 0, y: 0, width: 240, height: 24)
-    a.accessoryView = field
-    a.window.initialFirstResponder = field
-    guard a.runModal() == .alertFirstButtonReturn else { return }
+    alert.accessoryView = field
+    alert.window.initialFirstResponder = field
+    guard alert.runModal() == .alertFirstButtonReturn else { return }
     guard let line = Int(field.stringValue), line > 0, line <= index.starts.count else {
       NSSound.beep()
       return
@@ -324,29 +320,57 @@ final class Editor: NSWindowController, NSTextViewDelegate, @preconcurrency NSTe
     textView.setSelectedRange(range)
     textView.scrollRangeToVisible(range)
   }
-  @objc func showFind(_ sender: Any?) { showSearch(replace: false) }
-  @objc func showReplace(_ sender: Any?) { showSearch(replace: true) }
-  func showSearch(replace: Bool) {
-    if finder == nil { finder = FindPanel(editor: self) }
-    finder!.replacementRow.isHidden = !replace
-    if let content = finder!.window?.contentView {
-      finder!.window?.setContentSize(content.fittingSize)
+
+  @objc func selectLines(_ sender: Any?) {
+    let alert = NSAlert()
+    alert.messageText = "Select Lines"
+    alert.informativeText = "Enter a line number or range, such as 5 or 10-20."
+    alert.addButton(withTitle: "Select")
+    alert.addButton(withTitle: "Cancel")
+    let field = NSTextField(string: String(index.position(textView.selectedRange().location).line))
+    field.frame = NSRect(x: 0, y: 0, width: 240, height: 24)
+    alert.accessoryView = field
+    alert.window.initialFirstResponder = field
+    guard alert.runModal() == .alertFirstButtonReturn else { return }
+    let parts = field.stringValue.split(separator: "-", maxSplits: 1).compactMap {
+      Int($0.trimmingCharacters(in: .whitespaces))
     }
-    let selection = textView.selectedRange()
-    if selection.length > 0 {
-      finder!.query.stringValue = (textView.string as NSString).substring(with: selection)
+    guard let first = parts.first, first > 0, first <= index.starts.count else {
+      NSSound.beep()
+      return
     }
-    finder!.attach(show: true)
-    finder!.showWindow(nil)
-    finder!.window?.makeKey()
-    finder!.window?.makeFirstResponder(finder!.query)
+    let last = parts.count == 2 ? parts[1] : first
+    guard last >= first, last <= index.starts.count else {
+      NSSound.beep()
+      return
+    }
+    let start = index.starts[first - 1]
+    let end = last < index.starts.count ? index.starts[last] : textView.string.utf16.count
+    let range = NSRange(location: start, length: end - start)
+    textView.setSelectedRange(range)
+    textView.scrollRangeToVisible(range)
   }
-  @objc func findNext(_ sender: Any?) {
-    if finder == nil { showSearch(replace: false) } else { finder?.find(backwards: false) }
+
+  @objc func showFind(_ sender: Any?) { performFind(.showFindInterface) }
+  @objc func showReplace(_ sender: Any?) { performFind(.showReplaceInterface) }
+  @objc func findNext(_ sender: Any?) { performFind(.nextMatch) }
+  @objc func findPrevious(_ sender: Any?) { performFind(.previousMatch) }
+
+  private func performFind(_ action: NSTextFinder.Action) {
+    let item = NSMenuItem()
+    item.tag = action.rawValue
+    textView.performTextFinderAction(item)
   }
-  @objc func findPrevious(_ sender: Any?) {
-    if finder == nil { showSearch(replace: false) } else { finder?.find(backwards: true) }
+
+  @objc private func defaultsDidChange(_ notification: Notification) {
+    setBaseFont(AppPreferences.font)
+    wrap = UserDefaults.standard.bool(forKey: PreferenceKey.wrap)
+    setStatusVisible(UserDefaults.standard.bool(forKey: PreferenceKey.status))
+    textView.isContinuousSpellCheckingEnabled = UserDefaults.standard.bool(
+      forKey: PreferenceKey.checkSpelling)
+    applyWrap()
   }
+
   func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
     if menuItem.action == #selector(toggleWrap(_:)) { menuItem.state = wrap ? .on : .off }
     if menuItem.action == #selector(toggleStatus(_:)) {
@@ -355,7 +379,6 @@ final class Editor: NSWindowController, NSTextViewDelegate, @preconcurrency NSTe
     if menuItem.action == #selector(zoomIn(_:)) { return zoomPercent < 500 }
     if menuItem.action == #selector(zoomOut(_:)) { return zoomPercent > 10 }
     if menuItem.action == #selector(goTo(_:)) { return !wrap }
-    if menuItem.action == #selector(searchWeb(_:)) { return textView.selectedRange().length > 0 }
     return true
   }
 }

@@ -30,12 +30,6 @@
       editor.wrap = true
       editor.applyWrap()
       editor.window!.contentView!.layoutSubtreeIfNeeded()
-      measure("settings open, \(lines) lines") {
-        editor.showSettings(nil)
-        editor.window!.contentView!.layoutSubtreeIfNeeded()
-        editor.showSettings(nil)
-        editor.window!.contentView!.layoutSubtreeIfNeeded()
-      }
       measure("typing at start, \(lines) lines") {
         editor.textView.insertText("x", replacementRange: NSRange(location: 0, length: 0))
       }
@@ -45,16 +39,11 @@
         editor.setZoom(100)
         editor.window!.contentView!.layoutSubtreeIfNeeded()
       }
-      let finder = FindPanel(editor: editor)
-      finder.query.stringValue = "ordinary"
-      measure("find next, \(lines) lines", count: lines == 0 ? 1 : 20) {
-        finder.find(backwards: false)
-      }
       doc.close()
     }
     let input = String(repeating: "A line of plain text.\n", count: 100_000)
     measure("UTF-8 serialization, 2.1 MB", count: 5) {
-      precondition(TextFile(text: input).data().count == input.utf8.count)
+      precondition(try! TextFile(text: input).data().count == input.utf8.count)
     }
     var index = LineIndex()
     let text = NSMutableString(string: input)

@@ -1,6 +1,7 @@
 import AppKit
 
 let app = NSApplication.shared
+AppPreferences.registerDefaults()
 #if PERFORMANCE
   if CommandLine.arguments.contains("--benchmark") {
     benchmark()
@@ -25,10 +26,10 @@ if ProcessInfo.processInfo.environment["POTENAD_LAUNCH_CHECK"] == "1" {
   DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
     let documents = NSDocumentController.shared.documents
     let windows = documents.flatMap(\.windowControllers).compactMap(\.window)
-    guard !documents.isEmpty, !windows.isEmpty,
+    guard documents.count == 1, windows.count == 1,
       windows.allSatisfy({ $0.isVisible && $0.frame.width > 100 && $0.frame.height > 100 })
     else {
-      fputs("Launch check failed: document has no visible editor window.\n", stderr)
+      fputs("Launch check failed: expected one visible untitled editor window.\n", stderr)
       exit(1)
     }
     print(
